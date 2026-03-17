@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Hopelink VolunteerHub Calendar Sync",
+  "version": "1.0.0",
+  "description": "Syncs your Hopelink VolunteerHub committed events to Google Calendar",
+  "permissions": [
+    "identity",
+    "storage",
+    "tabs",
+    "scripting",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://hopelink.volunteerhub.com/*"
+  ],
+  "oauth2": {
+    "client_id": "435117931186-mucj50sge6rt1ahmr9nlenlqv72954sf.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar.events"
+    ]
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://hopelink.volunteerhub.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

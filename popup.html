@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon48.png" alt="" class="logo">
+    <h1>Hopelink Cal Sync</h1>
+  </div>
+
+  <button id="syncBtn" type="button">Sync Now</button>
+
+  <div id="status" class="status hidden"></div>
+
+  <div id="results" class="results hidden">
+    <div class="result-row total-row">
+      <span>Events Found</span>
+      <span id="totalCount" class="count">0</span>
+    </div>
+    <div class="result-row">
+      <span>Added</span>
+      <span id="addedCount" class="count">0</span>
+    </div>
+    <div class="result-row">
+      <span>Updated</span>
+      <span id="updatedCount" class="count">0</span>
+    </div>
+    <div class="result-row">
+      <span>Removed</span>
+      <span id="removedCount" class="count">0</span>
+    </div>
+    <div class="result-row">
+      <span>Unchanged</span>
+      <span id="unchangedCount" class="count">0</span>
+    </div>
+  </div>
+
+  <div id="errors" class="errors hidden"></div>
+
+  <div class="diagnostics">
+    <button id="diagBtn" type="button" class="diag-btn">Diagnostics</button>
+    <div id="diagInfo" class="diag-info hidden"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
