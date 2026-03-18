@@ -2,6 +2,45 @@ const syncBtn = document.getElementById('syncBtn');
 const statusEl = document.getElementById('status');
 const resultsEl = document.getElementById('results');
 const errorsEl = document.getElementById('errors');
+const lastSyncEl = document.getElementById('lastSync');
+
+let lastSyncTime = 0;
+let lastSyncInterval = null;
+
+function formatElapsed(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s ago`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${seconds}s ago`;
+  const hours = Math.floor(minutes / 60);
+  const remainMinutes = minutes % 60;
+  return `${hours}h ${remainMinutes}m ago`;
+}
+
+function updateLastSyncDisplay() {
+  if (!lastSyncTime) {
+    lastSyncEl.classList.add('hidden');
+    return;
+  }
+  const elapsed = Date.now() - lastSyncTime;
+  lastSyncEl.textContent = `Last synced ${formatElapsed(elapsed)}`;
+  lastSyncEl.classList.remove('hidden');
+}
+
+function startLastSyncTimer() {
+  updateLastSyncDisplay();
+  if (lastSyncInterval) clearInterval(lastSyncInterval);
+  lastSyncInterval = setInterval(updateLastSyncDisplay, 1000);
+}
+
+// Fetch last sync time on popup open
+chrome.runtime.sendMessage({ action: 'getLastSyncTime' }, (response) => {
+  if (response && response.lastSyncCompletedAt) {
+    lastSyncTime = response.lastSyncCompletedAt;
+    startLastSyncTimer();
+  }
+});
 
 syncBtn.addEventListener('click', async () => {
   setStatus('Syncing...', 'syncing');
@@ -34,6 +73,9 @@ syncBtn.addEventListener('click', async () => {
       setStatus(`Synced ${response.total} events`, 'success');
     }
     showResults(response);
+
+    lastSyncTime = Date.now();
+    startLastSyncTimer();
 
     if (response.errors && response.errors.length > 0) {
       errorsEl.textContent = response.errors.join('\n');

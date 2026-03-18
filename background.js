@@ -1,6 +1,6 @@
 // Service worker: orchestrates tab management, event scraping, and Google Calendar sync.
 
-const VHUB_SCHEDULE_URL = 'https://hopelink.volunteerhub.com/events/myschedule';
+const VHUB_SCHEDULE_URL = 'https://hopelink.volunteerhub.com/events/myschedule?format=List';
 const CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3';
 const CALENDAR_ID = 'primary';
 const STORAGE_KEY = 'syncedEvents'; // { [vhubGuid]: { googleEventId, hash } }
@@ -8,6 +8,15 @@ const STORAGE_KEY = 'syncedEvents'; // { [vhubGuid]: { googleEventId, hash } }
 // --- Auto-sync on event registration ---
 
 let autoSyncTimer = null;
+let lastSyncCompletedAt = 0;
+const LOGIN_SYNC_COOLDOWN_MS = 30000; // skip login sync if one ran within 30s
+
+// Restore last sync timestamp from storage (survives service worker restarts)
+chrome.storage.local.get('lastSyncCompletedAt', (result) => {
+  if (result.lastSyncCompletedAt) {
+    lastSyncCompletedAt = result.lastSyncCompletedAt;
+  }
+});
 
 chrome.webRequest.onCompleted.addListener(
   (details) => {
@@ -30,11 +39,49 @@ chrome.webRequest.onCompleted.addListener(
   },
 );
 
+// --- Auto-sync on login (landing page) ---
+
+chrome.webNavigation.onCompleted.addListener(
+  (details) => {
+    // Only top-level frame, not iframes
+    if (details.frameId !== 0) return;
+
+    // Skip if a sync completed recently (add/delete listeners already cover it)
+    if (Date.now() - lastSyncCompletedAt < LOGIN_SYNC_COOLDOWN_MS) {
+      console.log('Login sync skipped — recent sync already completed');
+      return;
+    }
+
+    // Debounce with the same timer as auto-sync to avoid overlap
+    if (autoSyncTimer) clearTimeout(autoSyncTimer);
+    autoSyncTimer = setTimeout(() => {
+      autoSyncTimer = null;
+      console.log('Login detected — starting sync');
+      runSync().catch((err) => {
+        console.error('Login sync failed:', err.message);
+      });
+    }, 3000);
+  },
+  {
+    url: [
+      { urlEquals: 'https://hopelink.volunteerhub.com/vv2/' },
+      { urlEquals: 'https://hopelink.volunteerhub.com/events/myschedule'}
+    ],
+  },
+);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'startSync') {
     runSync()
       .then((result) => sendResponse({ success: true, ...result }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.action === 'getLastSyncTime') {
+    chrome.storage.local.get('lastSyncCompletedAt', (result) => {
+      sendResponse({ lastSyncCompletedAt: result.lastSyncCompletedAt || 0 });
+    });
     return true;
   }
 
@@ -57,24 +104,49 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function runSync() {
   // 1. Open or reload the schedule tab
-  const tab = await openOrReloadScheduleTab();
+  const { tab, created } = await openOrReloadScheduleTab();
 
-  // 2. Wait for tab to finish loading
-  await waitForTabLoad(tab.id);
+  try {
+    // 2. Wait for tab to finish loading
+    await waitForTabLoad(tab.id);
 
-  // 3. Scrape events from the page
-  const scrapedEvents = await scrapeEventsFromTab(tab.id);
+    // 3. Check if we were redirected to login
+    const loadedTab = await chrome.tabs.get(tab.id);
+    if (!loadedTab.url || !loadedTab.url.includes('/events/myschedule')) {
+      // Bring tab to foreground so user can log in
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(loadedTab.windowId, { focused: true });
+      throw new Error('Not logged in — please log in and try again');
+    }
 
-  // 4. Get Google OAuth token
-  const token = await getAuthToken();
+    // 4. Scrape events from the page
+    const scrapedEvents = await scrapeEventsFromTab(tab.id);
 
-  // 5. Load previous sync state
-  const stored = await getStoredSyncState();
+    // 5. Get Google OAuth token
+    const token = await getAuthToken();
 
-  // 6. Reconcile and sync
-  const result = await reconcileAndSync(scrapedEvents, stored, token);
+    // 6. Load previous sync state
+    const stored = await getStoredSyncState();
 
-  return result;
+    // 7. Reconcile and sync
+    const result = await reconcileAndSync(scrapedEvents, stored, token);
+
+    lastSyncCompletedAt = Date.now();
+    await chrome.storage.local.set({ lastSyncCompletedAt });
+
+    // Close the tab if we created it (don't close user's existing tab)
+    if (created) {
+      await chrome.tabs.remove(tab.id).catch(() => {});
+    }
+
+    return result;
+  } catch (err) {
+    // Don't close a created tab on login redirect — user needs it to log in
+    if (created && err.message !== 'Not logged in — please log in and try again') {
+      await chrome.tabs.remove(tab.id).catch(() => {});
+    }
+    throw err;
+  }
 }
 
 // --- Tab Management ---
@@ -86,11 +158,13 @@ async function openOrReloadScheduleTab() {
   );
 
   if (scheduleTab) {
-    await chrome.tabs.reload(scheduleTab.id);
-    return scheduleTab;
+    // Navigate to List format URL (tab may be in Calendar format)
+    await chrome.tabs.update(scheduleTab.id, { url: VHUB_SCHEDULE_URL });
+    return { tab: scheduleTab, created: false };
   }
 
-  return chrome.tabs.create({ url: VHUB_SCHEDULE_URL, active: false });
+  const tab = await chrome.tabs.create({ url: VHUB_SCHEDULE_URL, active: false });
+  return { tab, created: true };
 }
 
 function waitForTabLoad(tabId) {
