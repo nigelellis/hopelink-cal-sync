@@ -115,8 +115,13 @@ async function runSync() {
   //    Works when logged in; throws on auth redirect (CORS blocks the OAuth domain)
   let html;
   try {
-    const response = await fetch(VHUB_SCHEDULE_URL, { credentials: 'include' });
-    if (!response.ok || !response.url.includes('/events/myschedule')) {
+    const response = await fetch(VHUB_SCHEDULE_URL, {
+      credentials: 'include',
+      redirect: 'manual',
+    });
+    // redirect: 'manual' returns an opaque response (type/status 0) on redirect,
+    // avoiding the CORS error that occurs when the browser follows the OAuth redirect.
+    if (response.type === 'opaqueredirect' || !response.ok) {
       throw new Error('redirect');
     }
     html = await response.text();
