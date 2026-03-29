@@ -20,7 +20,7 @@ chrome.storage.local.get('lastSyncCompletedAt', (result) => {
 
 chrome.webRequest.onCompleted.addListener(
   (details) => {
-    if (details.method === 'POST' && details.statusCode >= 200 && details.statusCode < 300) {
+    if (['PUT', 'POST'].includes(details.method) && details.statusCode >= 200 && details.statusCode < 300) {
       // Debounce: wait 3s after last registration request before syncing
       if (autoSyncTimer) clearTimeout(autoSyncTimer);
       autoSyncTimer = setTimeout(() => {
