@@ -1,4 +1,4 @@
-// Service worker: orchestrates tab management, event scraping, and Google Calendar sync.
+// Service worker: orchestrates event scraping (via fetch + offscreen DOM parsing) and Google Calendar sync.
 
 const VHUB_SCHEDULE_URL = 'https://hopelink.volunteerhub.com/events/myschedule?format=List';
 const CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3';
@@ -103,92 +103,69 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function runSync() {
-  // 1. Open or reload the schedule tab
-  const { tab, created } = await openOrReloadScheduleTab();
+  // 1. Fetch the schedule page HTML (cookies sent via host_permissions)
+  const response = await fetch(VHUB_SCHEDULE_URL, { credentials: 'include' });
 
-  try {
-    // 2. Wait for tab to finish loading
-    await waitForTabLoad(tab.id);
-
-    // 3. Check if we were redirected to login
-    const loadedTab = await chrome.tabs.get(tab.id);
-    if (!loadedTab.url || !loadedTab.url.includes('/events/myschedule')) {
-      // Bring tab to foreground so user can log in
-      await chrome.tabs.update(tab.id, { active: true });
-      await chrome.windows.update(loadedTab.windowId, { focused: true });
-      throw new Error('Not logged in — please log in and try again');
-    }
-
-    // 4. Scrape events from the page
-    const scrapedEvents = await scrapeEventsFromTab(tab.id);
-
-    // 5. Get Google OAuth token
-    const token = await getAuthToken();
-
-    // 6. Load previous sync state
-    const stored = await getStoredSyncState();
-
-    // 7. Reconcile and sync
-    const result = await reconcileAndSync(scrapedEvents, stored, token);
-
-    lastSyncCompletedAt = Date.now();
-    await chrome.storage.local.set({ lastSyncCompletedAt });
-
-    // Close the tab if we created it (don't close user's existing tab)
-    if (created) {
-      await chrome.tabs.remove(tab.id).catch(() => {});
-    }
-
-    return result;
-  } catch (err) {
-    // Don't close a created tab on login redirect — user needs it to log in
-    if (created && err.message !== 'Not logged in — please log in and try again') {
-      await chrome.tabs.remove(tab.id).catch(() => {});
-    }
-    throw err;
-  }
-}
-
-// --- Tab Management ---
-
-async function openOrReloadScheduleTab() {
-  const tabs = await chrome.tabs.query({ url: 'https://hopelink.volunteerhub.com/*' });
-  const scheduleTab = tabs.find((t) =>
-    t.url && t.url.includes('/events/myschedule'),
-  );
-
-  if (scheduleTab) {
-    // Navigate to List format URL (tab may be in Calendar format)
-    await chrome.tabs.update(scheduleTab.id, { url: VHUB_SCHEDULE_URL });
-    return { tab: scheduleTab, created: false };
+  // 2. Check if we were redirected to login
+  if (!response.ok || !response.url.includes('/events/myschedule')) {
+    throw new Error('Not logged in — please log in to VolunteerHub and try again');
   }
 
-  const tab = await chrome.tabs.create({ url: VHUB_SCHEDULE_URL, active: false });
-  return { tab, created: true };
+  const html = await response.text();
+
+  // 3. Parse events from HTML via offscreen document (service workers lack DOMParser)
+  const scrapedEvents = await parseEventsOffscreen(html);
+
+  // 4. Get Google OAuth token
+  const token = await getAuthToken();
+
+  // 5. Load previous sync state
+  const stored = await getStoredSyncState();
+
+  // 6. Reconcile and sync
+  const result = await reconcileAndSync(scrapedEvents, stored, token);
+
+  lastSyncCompletedAt = Date.now();
+  await chrome.storage.local.set({ lastSyncCompletedAt });
+
+  return result;
 }
 
-function waitForTabLoad(tabId) {
-  return new Promise((resolve) => {
-    function listener(updatedTabId, changeInfo) {
-      if (updatedTabId === tabId && changeInfo.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(listener);
-        // Small delay to let content script initialize
-        setTimeout(resolve, 500);
-      }
-    }
-    chrome.tabs.onUpdated.addListener(listener);
+// --- Offscreen Document Management ---
+
+let offscreenCreated = false;
+
+async function ensureOffscreenDocument() {
+  if (offscreenCreated) return;
+
+  // Check if one already exists (e.g. from a prior service worker lifecycle)
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
   });
+  if (contexts.length > 0) {
+    offscreenCreated = true;
+    return;
+  }
+
+  await chrome.offscreen.createDocument({
+    url: 'offscreen.html',
+    reasons: ['DOM_PARSER'],
+    justification: 'Parse VolunteerHub schedule HTML into structured event data',
+  });
+  offscreenCreated = true;
 }
 
-async function scrapeEventsFromTab(tabId) {
+async function parseEventsOffscreen(html) {
+  await ensureOffscreenDocument();
+
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, { action: 'scrapeEvents' }, (response) => {
+    chrome.runtime.sendMessage({ action: 'parseScheduleHTML', html }, (response) => {
       if (chrome.runtime.lastError) {
-        reject(new Error(`Failed to scrape: ${chrome.runtime.lastError.message}`));
+        reject(new Error(`Offscreen parse failed: ${chrome.runtime.lastError.message}`));
         return;
       }
       if (!response || !response.events) {
-        reject(new Error('No events returned from content script'));
+        reject(new Error('No events returned from offscreen parser'));
         return;
       }
       resolve(response.events);

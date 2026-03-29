@@ -6,8 +6,7 @@
   "permissions": [
     "identity",
     "storage",
-    "tabs",
-    "scripting",
+    "offscreen",
     "webRequest",
     "webNavigation"
   ],
@@ -23,13 +22,6 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": ["https://hopelink.volunteerhub.com/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

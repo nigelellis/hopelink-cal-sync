@@ -18,16 +18,16 @@ Chrome extension (Manifest V3) that syncs committed volunteer shifts from Hopeli
 
 Three execution contexts communicate via Chrome's message-passing API:
 
-- **`background.js`** — Service worker. Orchestrates the entire sync flow: tab management, scraping delegation, Google Calendar API calls, and reconciliation. Holds all Calendar API logic and sync state management. Listens for `startSync`, `getLastSyncTime`, and `getDiagnostics` messages from the popup, and auto-triggers sync via `webRequest` (event registration/cancellation) and `webNavigation` (login/landing page) listeners.
+- **`background.js`** — Service worker. Orchestrates the entire sync flow: fetches the VolunteerHub schedule page HTML directly (no tab needed), delegates DOM parsing to the offscreen document, and handles Google Calendar API calls and reconciliation. Listens for `startSync`, `getLastSyncTime`, and `getDiagnostics` messages from the popup, and auto-triggers sync via `webRequest` (event registration/cancellation) and `webNavigation` (login/landing page) listeners.
 
-- **`content.js`** — Content script injected into `hopelink.volunteerhub.com`. Scrapes event data (title, date, times, location, description) from the "My Schedule" list view DOM. Responds to `scrapeEvents` messages from the background worker.
+- **`offscreen.js` / `offscreen.html`** — Offscreen document (invisible). Receives schedule HTML from the service worker and parses it into structured event data using `DOMParser` (unavailable in service workers). Responds to `parseScheduleHTML` messages.
 
 - **`popup.js` / `popup.html` / `popup.css`** — Extension popup UI. "Sync Now" button, result counters, diagnostics panel. Communicates with the background worker via `chrome.runtime.sendMessage`.
 
 ### Sync Flow
 
-1. Background opens/reloads the VolunteerHub "My Schedule" tab (list format)
-2. Content script scrapes events from the DOM
+1. Background fetches the VolunteerHub "My Schedule" page HTML directly (cookies sent via `host_permissions`)
+2. Offscreen document parses the HTML into structured event data
 3. Background reconciles scraped events against stored state in `chrome.storage.local` (keyed by VolunteerHub GUID)
 4. Diffs are pushed to Google Calendar API (create/update/delete)
 5. Calendar events are prefixed `[Hopelink]`, colored Tomato (`colorId: '11'`), and tagged with `extendedProperties.private.source: 'hopelink-cal-sync'`
