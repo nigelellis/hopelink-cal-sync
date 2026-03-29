@@ -6,6 +6,7 @@
   "permissions": [
     "identity",
     "storage",
+    "tabs",
     "offscreen",
     "webRequest",
     "webNavigation"

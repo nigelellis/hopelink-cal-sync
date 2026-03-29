@@ -1,4 +1,5 @@
-// Service worker: orchestrates event scraping (via fetch + offscreen DOM parsing) and Google Calendar sync.
+// Service worker: orchestrates background fetch, HTML parsing (via offscreen document),
+// and Google Calendar sync. Opens a tab only when user needs to log in.
 
 const VHUB_SCHEDULE_URL = 'https://hopelink.volunteerhub.com/events/myschedule?format=List';
 const CALENDAR_API_BASE = 'https://www.googleapis.com/calendar/v3';
@@ -9,6 +10,7 @@ const STORAGE_KEY = 'syncedEvents'; // { [vhubGuid]: { googleEventId, hash } }
 
 let autoSyncTimer = null;
 let lastSyncCompletedAt = 0;
+let loginTabId = null; // Tab opened for user to log in — closed after successful login
 const LOGIN_SYNC_COOLDOWN_MS = 30000; // skip login sync if one ran within 30s
 
 // Restore last sync timestamp from storage (survives service worker restarts)
@@ -45,6 +47,10 @@ chrome.webNavigation.onCompleted.addListener(
   (details) => {
     // Only top-level frame, not iframes
     if (details.frameId !== 0) return;
+
+    // Ignore navigation in the login tab — it triggers on initial load before
+    // the user has actually logged in. The login tab is closed by runSync on success.
+    if (loginTabId !== null && details.tabId === loginTabId) return;
 
     // Skip if a sync completed recently (add/delete listeners already cover it)
     if (Date.now() - lastSyncCompletedAt < LOGIN_SYNC_COOLDOWN_MS) {
@@ -102,27 +108,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-async function runSync() {
-  // 1. Fetch the schedule page HTML (cookies sent via host_permissions)
-  const response = await fetch(VHUB_SCHEDULE_URL, { credentials: 'include' });
+// --- Sync ---
 
-  // 2. Check if we were redirected to login
-  if (!response.ok || !response.url.includes('/events/myschedule')) {
-    throw new Error('Not logged in — please log in to VolunteerHub and try again');
+async function runSync() {
+  // 1. Fetch schedule HTML in the background (no tab)
+  //    Works when logged in; throws on auth redirect (CORS blocks the OAuth domain)
+  let html;
+  try {
+    const response = await fetch(VHUB_SCHEDULE_URL, { credentials: 'include' });
+    if (!response.ok || !response.url.includes('/events/myschedule')) {
+      throw new Error('redirect');
+    }
+    html = await response.text();
+  } catch {
+    // Not logged in — open a visible tab so user can authenticate (if not already open)
+    if (loginTabId === null) {
+      const tab = await chrome.tabs.create({ url: 'https://hopelink.volunteerhub.com/account/signin', active: true });
+      loginTabId = tab.id;
+    }
+    throw new Error('Not logged in — opened VolunteerHub so you can log in');
   }
 
-  const html = await response.text();
+  // Login succeeded — close the login tab if we had one open
+  if (loginTabId !== null) {
+    const tabToClose = loginTabId;
+    loginTabId = null;
+    chrome.tabs.remove(tabToClose).catch(() => {});
+  }
 
-  // 3. Parse events from HTML via offscreen document (service workers lack DOMParser)
+  // 2. Parse HTML via offscreen document (service workers lack DOMParser)
   const scrapedEvents = await parseEventsOffscreen(html);
 
-  // 4. Get Google OAuth token
+  // 3. Get Google OAuth token
   const token = await getAuthToken();
 
-  // 5. Load previous sync state
+  // 4. Load previous sync state
   const stored = await getStoredSyncState();
 
-  // 6. Reconcile and sync
+  // 5. Reconcile and sync
   const result = await reconcileAndSync(scrapedEvents, stored, token);
 
   lastSyncCompletedAt = Date.now();
