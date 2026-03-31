@@ -294,10 +294,23 @@ async function reconcileAndSync(scrapedEvents, storedState, token) {
     }
   }
 
-  // Remove events no longer on schedule
+  // Remove events no longer on schedule (skip past events — leave them on the calendar)
   for (const storedId of storedIds) {
     if (!currentIds.has(storedId)) {
-      const { googleEventId } = storedState[storedId];
+      const { googleEventId, hash } = storedState[storedId];
+
+      // Check if the event has already occurred — if so, leave it on the calendar
+      try {
+        const eventData = JSON.parse(hash);
+        const endTime = new Date(eventData.endDateTime || eventData.startDateTime);
+        if (endTime < new Date()) {
+          unchanged++;
+          continue;
+        }
+      } catch {
+        // If we can't parse the hash, fall through to delete
+      }
+
       try {
         await deleteCalendarEvent(googleEventId, token);
         delete newState[storedId];
