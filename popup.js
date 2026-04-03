@@ -66,8 +66,13 @@ syncBtn.addEventListener('click', async () => {
       return;
     }
 
+    if (response.skipped) {
+      setStatus('Sync already in progress — try again shortly', 'syncing');
+      return;
+    }
+
     const accounted = response.added + response.updated + response.unchanged;
-    if (accounted !== response.total) {
+    if (accounted < response.total) {
       setStatus(`Warning: found ${response.total} events but only processed ${accounted}`, 'error');
     } else {
       setStatus(`Synced ${response.total} events`, 'success');
@@ -121,11 +126,20 @@ diagBtn.addEventListener('click', () => {
   });
 });
 
-function showResults({ total, added, updated, removed, unchanged }) {
+function showResults({ total, added, updated, removed, unchanged, duplicatesRemoved }) {
   document.getElementById('totalCount').textContent = total;
   document.getElementById('addedCount').textContent = added;
   document.getElementById('updatedCount').textContent = updated;
   document.getElementById('removedCount').textContent = removed;
   document.getElementById('unchangedCount').textContent = unchanged;
+
+  const dedupRow = document.getElementById('dedupRow');
+  if (duplicatesRemoved > 0) {
+    document.getElementById('dedupCount').textContent = duplicatesRemoved;
+    dedupRow.classList.remove('hidden');
+  } else {
+    dedupRow.classList.add('hidden');
+  }
+
   resultsEl.classList.remove('hidden');
 }

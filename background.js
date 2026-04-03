@@ -9,6 +9,7 @@ const STORAGE_KEY = 'syncedEvents'; // { [vhubGuid]: { googleEventId, hash } }
 // --- Auto-sync on event registration ---
 
 let autoSyncTimer = null;
+let syncInProgress = false;
 let lastSyncCompletedAt = 0;
 let loginTabId = null; // Tab opened for user to log in — closed after successful login
 const LOGIN_SYNC_COOLDOWN_MS = 30000; // skip login sync if one ran within 30s
@@ -79,7 +80,13 @@ chrome.webNavigation.onCompleted.addListener(
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'startSync') {
     runSync()
-      .then((result) => sendResponse({ success: true, ...result }))
+      .then((result) => {
+        if (result.skipped) {
+          sendResponse({ success: true, skipped: true });
+        } else {
+          sendResponse({ success: true, ...result });
+        }
+      })
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
@@ -111,6 +118,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // --- Sync ---
 
 async function runSync() {
+  if (syncInProgress) {
+    console.log('Sync already in progress — skipping');
+    return { skipped: true };
+  }
+  syncInProgress = true;
+  try {
+    return await _runSync();
+  } finally {
+    syncInProgress = false;
+  }
+}
+
+async function _runSync() {
   // 1. Fetch schedule HTML in the background (no tab)
   //    Works when logged in; throws on auth redirect (CORS blocks the OAuth domain)
   let html;
@@ -241,7 +261,82 @@ function eventHash(event) {
   });
 }
 
+async function deduplicateCalendarEvents(storedState, token) {
+  const allEvents = [];
+  let pageToken = null;
+
+  do {
+    const params = new URLSearchParams({
+      privateExtendedProperty: 'source=hopelink-cal-sync',
+      maxResults: '250',
+      showDeleted: 'false',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+
+    const url = `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(CALENDAR_ID)}/events?${params}`;
+    const result = await calendarApiFetch(url, { method: 'GET' }, token);
+    if (result.items) allEvents.push(...result.items);
+    pageToken = result.nextPageToken || null;
+  } while (pageToken);
+
+  // Group by vhubEventId
+  const byVhubId = new Map();
+  for (const event of allEvents) {
+    if (event.status === 'cancelled') continue;
+    const vhubId = event.extendedProperties?.private?.vhubEventId;
+    if (!vhubId) continue;
+    if (!byVhubId.has(vhubId)) byVhubId.set(vhubId, []);
+    byVhubId.get(vhubId).push(event);
+  }
+
+  let duplicatesRemoved = 0;
+  const updatedState = { ...storedState };
+  let stateChanged = false;
+
+  for (const [vhubId, events] of byVhubId) {
+    if (events.length <= 1) continue;
+
+    // Prefer the event referenced in stored state; otherwise keep most recently updated
+    const storedGoogleId = storedState[vhubId]?.googleEventId;
+    events.sort((a, b) => {
+      if (a.id === storedGoogleId) return -1;
+      if (b.id === storedGoogleId) return 1;
+      return new Date(b.updated) - new Date(a.updated);
+    });
+
+    const [keeper, ...extras] = events;
+
+    // Repoint stored state to the keeper if needed
+    if (updatedState[vhubId] && updatedState[vhubId].googleEventId !== keeper.id) {
+      updatedState[vhubId] = { ...updatedState[vhubId], googleEventId: keeper.id };
+      stateChanged = true;
+    }
+
+    for (const extra of extras) {
+      try {
+        await deleteCalendarEvent(extra.id, token);
+        duplicatesRemoved++;
+      } catch (err) {
+        if (err.status === 404 || err.status === 410) {
+          duplicatesRemoved++;
+        } else {
+          console.error(`Failed to delete duplicate calendar event ${extra.id}:`, err.message);
+        }
+      }
+    }
+  }
+
+  if (stateChanged) {
+    await saveStoredSyncState(updatedState);
+  }
+
+  return { duplicatesRemoved, updatedState: stateChanged ? updatedState : storedState };
+}
+
 async function reconcileAndSync(scrapedEvents, storedState, token) {
+  const { duplicatesRemoved, updatedState } = await deduplicateCalendarEvents(storedState, token);
+  storedState = updatedState;
+
   const currentIds = new Set(scrapedEvents.map((e) => e.id));
   const storedIds = new Set(Object.keys(storedState));
   const newState = { ...storedState };
@@ -250,6 +345,7 @@ async function reconcileAndSync(scrapedEvents, storedState, token) {
   let updated = 0;
   let removed = 0;
   let unchanged = 0;
+  let kept = 0;
   const errors = [];
 
   // Add or update events
@@ -304,7 +400,7 @@ async function reconcileAndSync(scrapedEvents, storedState, token) {
         const eventData = JSON.parse(hash);
         const endTime = new Date(eventData.endDateTime || eventData.startDateTime);
         if (endTime < new Date()) {
-          unchanged++;
+          kept++;
           continue;
         }
       } catch {
@@ -329,7 +425,7 @@ async function reconcileAndSync(scrapedEvents, storedState, token) {
 
   await saveStoredSyncState(newState);
 
-  return { added, updated, removed, unchanged, errors, total: scrapedEvents.length };
+  return { added, updated, removed, unchanged, kept, duplicatesRemoved, errors, total: scrapedEvents.length };
 }
 
 // --- Google Calendar API ---
