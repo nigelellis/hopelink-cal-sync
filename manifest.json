@@ -7,7 +7,7 @@
     "identity",
     "storage",
     "tabs",
-    "offscreen",
+    "cookies",
     "webRequest",
     "webNavigation"
   ],

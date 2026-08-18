@@ -4,6 +4,11 @@ const resultsEl = document.getElementById('results');
 const errorsEl = document.getElementById('errors');
 const lastSyncEl = document.getElementById('lastSync');
 
+document.getElementById('vhubLink').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.tabs.create({ url: 'https://hopelink.volunteerhub.com/' });
+});
+
 let lastSyncTime = 0;
 let lastSyncInterval = null;
 
@@ -82,8 +87,9 @@ syncBtn.addEventListener('click', async () => {
     lastSyncTime = Date.now();
     startLastSyncTimer();
 
-    if (response.errors && response.errors.length > 0) {
-      errorsEl.textContent = response.errors.join('\n');
+    const notices = [...(response.warnings || []), ...(response.errors || [])];
+    if (notices.length > 0) {
+      errorsEl.textContent = notices.join('\n');
       errorsEl.classList.remove('hidden');
     }
   });
@@ -115,6 +121,13 @@ diagBtn.addEventListener('click', () => {
     }
 
     const lines = [
+      ...(response.connection || []),
+      '',
+      ...(response.wire || []),
+      '',
+      'VolunteerHub cookies:',
+      ...response.cookies.map((c) => `  ${c}`),
+      '',
       `Tracked events: ${response.trackedCount}`,
       `Storage version: ${response.hashVersion}`,
       '',

@@ -19,6 +19,12 @@ body {
   margin-bottom: 16px;
 }
 
+.header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .logo {
   width: 32px;
   height: 32px;
@@ -28,6 +34,18 @@ h1 {
   font-size: 16px;
   font-weight: 600;
   color: #2196F3;
+}
+
+.vhub-link {
+  font-size: 11px;
+  color: #757575;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.vhub-link:hover {
+  color: #2196F3;
+  text-decoration: underline;
 }
 
 .last-sync {
